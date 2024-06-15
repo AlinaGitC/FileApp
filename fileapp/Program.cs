@@ -1,143 +1,101 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+﻿using System.Collections.Generic;
+using System;
 using System.IO;
-using System.Threading.Tasks;
+using System.Linq;
 
 namespace fileapp
-{    
-    internal class Program
+{
+    class Program
     {
-        static List<DataBaseObject> ReadDataFromFile(string filePath)
-        {
-            var data = new List<DataBaseObject>();
-            var lines = File.ReadAllLines(filePath);
-
-            string header = null, connect = null;
-
-            foreach (var line in lines)
-            {
-                if (string.IsNullOrWhiteSpace(line))
-                {
-                    if (header != null && connect != null)
-                    {
-                        data.Add(new DataBaseObject { Header = header, Connect = connect });
-                    }
-                    header = null;
-                    connect = null;
-                }
-                else if (line.StartsWith("["))
-                {
-                    header = line.Trim('[', ']');
-                }
-                else
-                {
-                    var parts = line.Split('=');
-                    if (parts.Length == 2)
-                    {
-                        var key = parts[0].Trim();
-                        var value = parts[1].Trim();
-                        if (key == "Connect")
-                        {
-                            connect = value;
-                        }
-                    }
-                }
-            }
-
-            if (header != null && connect != null)
-            {
-                data.Add(new DataBaseObject { Header = header, Connect = connect });
-            }
-
-            return data;
-        }
-
-
-        static (List<DataBaseObject>, List<DataBaseObject>) CheckData(List<DataBaseObject> data)
-        {
-            var validData = new List<DataBaseObject>();
-            var invalidData = new List<DataBaseObject>();
-
-            foreach (var obj in data)
-            {
-                if (obj.Connect.StartsWith("File="))
-                {
-                    var path = obj.Connect.Substring(5);
-                    if (!path.Any(c => Path.GetInvalidPathChars().Contains(c)))
-                    {
-                        validData.Add(obj);
-                    }
-                    else
-                    {
-                        invalidData.Add(obj);
-                    }
-                }
-                else if (obj.Connect.StartsWith("Srvr=") && obj.Connect.Contains("Ref="))
-                {
-                    validData.Add(obj);
-                }
-                else
-                {
-                    invalidData.Add(obj);
-                }
-            }
-
-            return (validData, invalidData);
-        }
-
-        static void SplitAndSaveData(List<DataBaseObject> validData)
-        {
-            int numParts = 5;
-            int chunkSize = validData.Count / numParts;
-
-            for (int i = 0; i < numParts; i++)
-            {
-                var chunk = validData.Skip(i * chunkSize).Take(chunkSize);
-                File.WriteAllLines($"base_{i + 1}.txt", chunk.Select(obj => $"[{obj.Header}]\nConnect={obj.Connect}\n"));
-            }
-        }
-
-
         static void Main(string[] args)
         {
-            /*Console.Write("Введите путь к файлу: ");
-            string filePath = Console.ReadLine();*/
-
-            //Добавлен запуск программы и ввод пути к файлу из командной строки
             if (args.Length == 0)
             {
                 Console.WriteLine("Usage: DatabaseAnalysis <inputFilePath>");
                 return;
             }
 
-            string filePath = args[0];
+            string inputFilePath = args[0];
             List<DataBaseObject> connections = new List<DataBaseObject>();
+
             try
             {
-                if (File.Exists(filePath))
-                {
-                    var data = ReadDataFromFile(filePath);
-                    var (validData, invalidData) = CheckData(data);
+                string[] lines = File.ReadAllLines(inputFilePath);
+                List<string> currentConnection = new List<string>();
 
-                    if (invalidData.Any())
+                foreach (string line in lines)
+                {
+                    if (line.StartsWith("[") && line.EndsWith("]"))
                     {
-                        File.WriteAllLines("bad_data.txt", invalidData.Select(obj => $"[{obj.Header}]\nConnect={obj.Connect}\n"));
+                        if (currentConnection.Count > 0)
+                        {
+                            ProcessConnection(currentConnection, connections);
+                            currentConnection.Clear();
+                        }
+                        currentConnection.Add(line);
                     }
-
-                    SplitAndSaveData(validData);
-
-                    Console.WriteLine("Данные успешно обработаны.");
+                    else
+                    {
+                        currentConnection.Add(line);
+                    }
                 }
-                else
+
+                if (currentConnection.Count > 0)
                 {
-                    Console.WriteLine("Файл не найден.");
+                    ProcessConnection(currentConnection, connections);
+                }
+
+                var fileValidations = new FileDatabaseValidation();
+                var serverValidations = new ServerDatabaseValidation();
+
+                List<DataBaseObject> validConnections = connections.Where(c =>
+                {
+                    if (c.Connect.StartsWith("File="))
+                    {
+                        return fileValidations.Validate(c.Connect);
+                    }
+                    else if (c.Connect.StartsWith("Srvr="))
+                    {
+                        return serverValidations.Validate(c.Connect);
+                    }
+                    return false;
+                }).ToList();
+
+                List<DataBaseObject> invalidConnections = connections.Except(validConnections).ToList();
+
+                File.WriteAllLines("bad_data.txt", invalidConnections.Select(c => $"[{c.Header}]\\nConnect={c.Connect}\\n"));
+
+                int connectionsPerFile = validConnections.Count / 5;
+                for (int i = 0; i < 5; i++)
+                {
+                    var connectionsToSave = validConnections.Skip(i * connectionsPerFile).Take(connectionsPerFile);
+                    File.WriteAllLines($"base_{i + 1}.txt", connectionsToSave.Select(c => $"[{c.Header}]\\nConnect={c.Connect}\\n"));
                 }
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
-                Console.WriteLine($"Ошибка: {ex.Message}");
+                Console.WriteLine("Возникла ошибка: " + ex.Message);
+            }
+        }
+
+        static void ProcessConnection(List<string> connectionInfo, List<DataBaseObject> connections)
+        {
+            Dictionary < string, string> connectionData = new Dictionary<string, string>();
+            string title = connectionInfo.First().Trim('[', ']');
+
+            foreach (string line in connectionInfo.Skip(1))
+            {
+                string[] parts = line.Split('=');
+                if (parts.Length == 2)
+                {
+                    connectionData[parts[0]] = parts[1];
+                }
+            }
+
+            if (connectionData.ContainsKey("Connection"))
+            {
+                connections.Add(new DataBaseObject { Header = title, Connect = connectionData["Connection"] });
+                Console.WriteLine("Данные успешно обработаны");
             }
             Console.ReadLine();
         }
